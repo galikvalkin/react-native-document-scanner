@@ -1,10 +1,8 @@
 package com.documentscanner;
 
-import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.drawable.shapes.PathShape;
@@ -35,24 +33,19 @@ import com.documentscanner.views.HUDCanvasView;
 import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
-import org.opencv.core.MatOfInt;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
-import org.opencv.core.Rect;
-import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
-import org.opencv.calib3d.Calib3d;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.List;
 
 /**
  * Created by allgood on 05/03/16.
@@ -326,7 +319,10 @@ public class ImageProcessor extends Handler {
         Size size = new Size(width, height);
 
         Log.i("COUCOU", "Size----->" + size);
+        Log.d("DEBUG_SCANNER", "contours.size(): " + contours.size());
         for (MatOfPoint c : contours) {
+            Point[] contourArr = c.toArray();
+            Log.d("DEBUG_SCANNER", "contourArr.length: " + contourArr.length);
             MatOfPoint2f c2f = new MatOfPoint2f(c.toArray());
             double peri = Imgproc.arcLength(c2f, true);
             MatOfPoint2f approx = new MatOfPoint2f();
@@ -335,14 +331,14 @@ public class ImageProcessor extends Handler {
             Point[] points = approx.toArray();
 
             // select biggest 4 angles polygon
-            // if (points.length == 4) {
-            Point[] foundPoints = sortPoints(points);
+//            if (points.length == 4) {
+                Point[] foundPoints = sortPoints(points);
 
-            if (insideArea(foundPoints, size)) {
+                if (insideArea(foundPoints, size, srcSize)) {
 
-                return new Quadrilateral(c, foundPoints);
-            }
-            // }
+                    return new Quadrilateral(c, foundPoints);
+                }
+//            }
         }
 
         return null;
@@ -384,17 +380,107 @@ public class ImageProcessor extends Handler {
         return result;
     }
 
-    private boolean insideArea(Point[] rp, Size size) {
+    private double getLength(Point p1, Point p2) {
+        double arg1 = Math.pow((p1.x - p2.x), 2);
+        double arg2 = Math.pow((p1.y - p2.y), 2);
+        return Math.sqrt(arg1 + arg2);
+    }
+
+    private double getAngle(Point b, Point a, Point c) {
+        Point vba = new Point(a.x - b.x, a.y - b.y);
+        Point vbc = new Point(c.x - b.x, c.y - b.y);
+        double mvba = Math.sqrt(Math.pow(vba.x, 2) + Math.pow(vba.y, 2));
+        double mvbc = Math.sqrt(Math.pow(vbc.x, 2) + Math.pow(vbc.y, 2));
+        double arg1 = vba.x * vbc.x + vba.y * vbc.y;
+        double arg2 = mvba * mvbc;
+        double cos = arg1 / arg2;
+        return Math.acos(cos);
+    }
+
+    private boolean angleSumCorrect(double topLeftAngle, double topRightAngle, double bottomLeftAngle, double bottomRightAngle) {
+        double angleSum = topLeftAngle + topRightAngle + bottomLeftAngle + bottomRightAngle;
+        double diff = Math.PI * 2 - angleSum;
+        return Math.abs(diff) < 0.05;
+    }
+
+    private boolean angleIsSquare(double angle) {
+        double top = 1.66;
+        double low = 1.40;
+        return (low < angle) && (angle < top);
+    }
+
+    private boolean diffIsTrapezoid(double diff) {
+        return diff < 0.5;
+    }
+
+    private boolean isRectangle(Point[] points) {
+        double topLeftAngle = getAngle(points[0], points[1], points[3]);
+        double topRightAngle = getAngle(points[1], points[2], points[0]);
+        double bottomRightAngle = getAngle(points[2], points[3], points[1]);
+        double bottomLeftAngle = getAngle(points[3], points[0], points[2]);
+
+        boolean angleSumCorrect = angleSumCorrect(topLeftAngle, topRightAngle, bottomLeftAngle, bottomRightAngle);
+
+        return angleIsSquare(topLeftAngle) && angleIsSquare(topRightAngle) && angleIsSquare(bottomLeftAngle) && angleIsSquare(bottomRightAngle) && angleSumCorrect;
+    }
+
+    private boolean isTrapezoid(Point[] points) {
+        double topLeftAngle = getAngle(points[0], points[1], points[3]);
+        double topRightAngle = getAngle(points[1], points[2], points[0]);
+        double bottomRightAngle = getAngle(points[2], points[3], points[1]);
+        double bottomLeftAngle = getAngle(points[3], points[0], points[2]);
+        double topLeftTopRightDiff = Math.abs(topRightAngle - topLeftAngle);
+        double topRightBottomRightDiff = Math.abs(bottomRightAngle - topRightAngle);
+        double bottomRightBottomLeftDiff = Math.abs(bottomLeftAngle - bottomRightAngle);
+        double bottomLeftTopLeftDiff = Math.abs(topLeftAngle - bottomLeftAngle);
+
+        boolean angleSumCorrect = angleSumCorrect(topLeftAngle, topRightAngle, bottomLeftAngle, bottomRightAngle);
+
+        return (
+                angleSumCorrect && ((diffIsTrapezoid(topLeftTopRightDiff) && diffIsTrapezoid(bottomRightBottomLeftDiff)) || (diffIsTrapezoid(topRightBottomRightDiff) && diffIsTrapezoid(bottomLeftTopLeftDiff)))
+        );
+    }
+
+    private boolean isParallelogram(Point[] points) {
+        double topLeftAngle = getAngle(points[0], points[1], points[3]);
+        double topRightAngle = getAngle(points[1], points[2], points[0]);
+        double bottomRightAngle = getAngle(points[2], points[3], points[1]);
+        double bottomLeftAngle = getAngle(points[3], points[0], points[2]);
+        double topLeftBottomRightDiff = Math.abs(bottomRightAngle - topLeftAngle);
+        double topRightBottomLeftDiff = Math.abs(bottomLeftAngle - topRightAngle);
+
+        boolean angleSumCorrect = angleSumCorrect(topLeftAngle, topRightAngle, bottomLeftAngle, bottomRightAngle);
+
+        return angleSumCorrect && (diffIsTrapezoid(topLeftBottomRightDiff) && diffIsTrapezoid(topRightBottomLeftDiff));
+    }
+
+    private double getDistance(Point a, Point b) {
+        return Math.sqrt((b.y - a.y) * (b.y - a.y) + (b.x - a.x) * (b.x - a.x));
+    }
+
+    private boolean aspectRatioCorrect(double width, double height) {
+        double a4top = 1.5;
+        double a4bottom = 1.3;
+        double aspectRatio = width > height ? width / height : height / width;
+
+        return a4bottom < aspectRatio && aspectRatio < a4top;
+    }
+
+    private boolean isCorrectDocumentFigure(Point[] points) {
+        return isRectangle(points);
+//        return (isRectangle(points) || isTrapezoid(points) || isParallelogram(points));
+    }
+
+    private boolean insideArea(Point[] rp, Size size, Size srcSize) {
 
         int width = Double.valueOf(size.width).intValue();
         int height = Double.valueOf(size.height).intValue();
 
         int minimumSize = width / 10;
-        int minimumHSize = height / 4;
 
         boolean isANormalShape = rp[0].x != rp[1].x && rp[1].y != rp[0].y && rp[2].y != rp[3].y && rp[3].x != rp[2].x;
         boolean isBigEnough = ((rp[1].x - rp[0].x >= minimumSize) && (rp[2].x - rp[3].x >= minimumSize)
-                && (rp[3].y - rp[0].y >= minimumHSize) && (rp[2].y - rp[1].y >= minimumHSize));
+                && (rp[3].y - rp[0].y >= minimumSize) && (rp[2].y - rp[1].y >= minimumSize));
 
         double leftOffset = rp[0].x - rp[3].x;
         double rightOffset = rp[1].x - rp[2].x;
@@ -403,10 +489,10 @@ public class ImageProcessor extends Handler {
 
         boolean isAnActualRectangle = ((leftOffset <= minimumSize && leftOffset >= -minimumSize)
                 && (rightOffset <= minimumSize && rightOffset >= -minimumSize)
-                && (bottomOffset <= minimumHSize && bottomOffset >= -minimumHSize)
-                && (topOffset <= minimumHSize && topOffset >= -minimumHSize));
+                && (bottomOffset <= minimumSize && bottomOffset >= -minimumSize)
+                && (topOffset <= minimumSize && topOffset >= -minimumSize));
 
-        return isANormalShape && isAnActualRectangle && isBigEnough;
+        return isANormalShape && isBigEnough;
     }
 
     private void enhanceDocument(Mat src) {
@@ -518,8 +604,7 @@ public class ImageProcessor extends Handler {
 
         ArrayList<MatOfPoint> contours = new ArrayList<MatOfPoint>();
         Mat hierarchy = new Mat();
-
-        Imgproc.findContours(cannedImage, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(cannedImage, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
 
         hierarchy.release();
 
